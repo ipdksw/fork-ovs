@@ -55,12 +55,20 @@ USAGE = "ovs-p4ctl: P4Runtime switch management utility\n" \
                                                "representation of P4 " \
                                                "program\n" \
         "  add-entry SWITCH TABLE FLOW         adds new table entry\n" \
+        "  modify-entry SWITCH TABLE FLOW      modify table entry\n" \
         "  del-entry SWITCH TABLE KEY          delete a table entry with KEY" \
                                                " from TABLE\n" \
         "  dump-entries SWITCH [TBL]           print table entries\n" \
         "  set-default-entry SWITCH TBL ACTION sets a default table entry " \
                                                "for TBL\n" \
-        "  get-default-entry SWITCH TBL print  default table entry for TBL\n"
+        "  get-default-entry SWITCH TBL print  default table entry for TBL\n"\
+        "  add-action-profile-member SWITCH TABLE FLOW adds member reference\n" \
+        "  delete-action-profile-member SWITCH TABLE FLOW delete member\n" \
+        "  add-action-profile-group SWITCH TABLE FLOW adds group reference\n" \
+        "  modify-action-profile-group SWITCH TABLE FLOW modify group\n" \
+        "  delete-action-profile-group SWITCH TABLE FLOW delete group\n" \
+        "  get-action-profile-member SWITCH TABLE FLOW print member entries\n" \
+        "  get-action-profile-group SWITCH TABLE FLOW print group entries\n"
 
 
 def usage():
@@ -282,6 +290,9 @@ class P4InfoHelper(object):
     def get_id(self, entity_type, name):
         return self.get(entity_type, name=name).preamble.id
 
+    def implementation_id(self, entity_type, name):
+        return self.get(entity_type, name=name).implementation_id
+
     def get_name(self, entity_type, id):
         return self.get(entity_type, id=id).preamble.name
 
@@ -416,7 +427,9 @@ class P4InfoHelper(object):
                         default_action=False,
                         action_name=None,
                         action_params=None,
-                        priority=None):
+                        priority=None,
+                        group_id=0,
+                        member_id=0):
         table_entry = p4runtime_pb2.TableEntry()
         table_entry.table_id = self.get_tables_id(table_name)
 
@@ -440,7 +453,55 @@ class P4InfoHelper(object):
                     self.get_action_param_pb(action_name, field_name, value)
                     for field_name, value in action_params.items()
                 ])
+
+        if member_id:
+            table_entry.action.action_profile_member_id = member_id
+
+        if group_id:
+            table_entry.action.action_profile_group_id = group_id
+
         return table_entry
+
+    def buildActionProfileMember(self,
+                        table_name,
+                        member_id=0,
+                        action_name=None,
+                        action_params=None,
+                        priority=None):
+        action_profile_member = p4runtime_pb2.ActionProfileMember()
+
+
+        action_profile_member.action_profile_id = self.get_action_profiles_id(table_name);
+        action_profile_member.member_id = member_id
+
+        if action_name:
+            action = action_profile_member.action
+            action.action_id = self.get_actions_id(action_name)
+            if action_params:
+                action.params.extend([
+                    self.get_action_param_pb(action_name, field_name, value)
+                    for field_name, value in action_params.items()
+                ])
+
+        return action_profile_member
+
+    def buildActionProfileGroup(self,
+                        table_name,
+                        group_id=0,
+                        max_size=0,
+                        members=[]):
+
+        action_profile_group = p4runtime_pb2.ActionProfileGroup()
+        action_profile_group.action_profile_id = self.get_action_profiles_id(table_name);
+        action_profile_group.group_id = group_id
+        for i in members:
+            if str.isdigit(i):
+                apg = action_profile_group.members.add()
+                apg.member_id = int(i)
+
+        action_profile_group.max_size = max_size
+        return action_profile_group
+
 
 
 class P4RuntimeClient:
@@ -764,14 +825,44 @@ def parse_action(action):
 
 
 def parse_flow(flow):
-    tmp = flow.split(",action=")
-    mk = tmp[0]
-    act = tmp[1]
+    extract_mk = flow.split(",")
+    mk = extract_mk[0]
+    extract_key = extract_mk[1]
+    extract_act = extract_key.split("=")
+    key = extract_act[0]
+    act = extract_act[1]
+    action_name = None
+    act_data = None
+    group_id = 0
+    member_id = 0
+
+    if key == "action":
+        action_name, act_data = parse_action(act)
+    elif key == "group_id":
+        group_id = act
+    elif key == "member_id":
+        member_id = act
 
     match_keys = parse_match_key(mk)
-    action_name, act_data = parse_action(act)
-    return match_keys, action_name, act_data
+    return match_keys, action_name, act_data, group_id, member_id
 
+def parse_profile_mem(flow):
+    extract_mem = flow.split(",member_id=")
+    action_param = extract_mem[0]
+    mem_id = extract_mem[1]
+
+    act = action_param.split("action=")
+    action_name, act_data = parse_action(act[1])
+    return action_name, act_data, mem_id
+
+def parse_profile_group(flow):
+    extract_group = flow.split(",reference_members=")
+    group_id = extract_group[0].split("group_id=")
+    mem = extract_group[1].split(",max_size=")
+
+    ref_members = mem[0]
+    max_size = mem[1]
+    return group_id[1], ref_members, max_size
 
 @with_client
 def p4ctl_add_entry(client, bridge, tbl_name, flow):
@@ -781,7 +872,7 @@ def p4ctl_add_entry(client, bridge, tbl_name, flow):
         ovs-p4ctl add-entry br0 pipe.filter_tbl
                     headers.ipv4.dstAddr=10.10.10.10,action=pipe.push_mpls(10)
     """
-    match_keys, action, action_data = parse_flow(flow)
+    match_keys, action, action_data, grp_id, mem_id = parse_flow(flow)
 
     p4info = client.get_p4info()
     if not p4info:
@@ -793,14 +884,53 @@ def p4ctl_add_entry(client, bridge, tbl_name, flow):
         table_name=tbl_name,
         match_fields=match_keys,
         action_name=action,
-        action_params={a.name: int(action_data[idx]) for idx,
-                       a in enumerate(helper.get_action_params(action))})
+        action_params=action_data if action_data==None else {a.name:
+                       int(action_data[idx]) for idx,
+                       a in enumerate(helper.get_action_params(action))},
+        priority=None,
+        group_id=int(grp_id),
+        member_id=int(mem_id))
 
     update = p4runtime_pb2.Update()
     update.type = p4runtime_pb2.Update.INSERT
     update.entity.table_entry.CopyFrom(te)
 
     client.write_update(update)
+
+
+@with_client
+def p4ctl_mod_entry(client, bridge, tbl_name, flow):
+    """
+    mod-entry SWITCH TABLE MATCH_KEY ACTION ACTION_DATA
+    Example:
+        ovs-p4ctl mod-entry br0 pipe.filter_tbl
+                    headers.ipv4.dstAddr=10.10.10.10,action=pipe.push_mpls(10)
+    """
+    match_keys, action, action_data, grp_id, mem_id = parse_flow(flow)
+
+    p4info = client.get_p4info()
+    if not p4info:
+        raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+
+    te = helper.buildTableEntry(
+        table_name=tbl_name,
+        match_fields=match_keys,
+        action_name=action,
+        action_params=action_data if action_data==None else {a.name:
+                       int(action_data[idx]) for idx,
+                       a in enumerate(helper.get_action_params(action))},
+        priority=None,
+        group_id=int(grp_id),
+        member_id=int(mem_id))
+
+    update = p4runtime_pb2.Update()
+    update.type = p4runtime_pb2.Update.MODIFY
+    update.entity.table_entry.CopyFrom(te)
+
+    client.write_update(update)
+
 
 
 @with_client
@@ -915,6 +1045,38 @@ def _format_entry(p4info_helper, table_entry):
 
     return output_buffer
 
+def _format_member(p4info_helper, apm):
+    apm_name = p4info_helper.get_name('action_profiles', apm.action_profile_id)
+    output_buffer = "  "
+    output_buffer += "action_profiles={}".format(apm_name)
+
+    output_buffer += ' actions='
+    action_name = p4info_helper.get_name('actions',
+                                         apm.action.action_id)
+    action_params = p4info_helper.get_action_params(action_name)
+    params_str = ""
+    for idx, param in enumerate(apm.action.params):
+        params_str += "{}={}".format(action_params[idx].name,
+                                     int.from_bytes(param.value, "big"))
+    output_buffer += '{}({})'.format(action_name, params_str)
+
+    return output_buffer
+
+def _format_group(p4info_helper, apg):
+    apm_name = p4info_helper.get_name('action_profiles', apg.action_profile_id)
+    output_buffer = "  "
+    output_buffer += "action_profiles={}".format(apm_name)
+
+    output_buffer += ' reference_members='
+
+    converted_list = [str(member.member_id) for member in apg.members]
+    params_str = ",".join(converted_list)
+
+    output_buffer += '({})'.format(params_str)
+
+    output_buffer += ' max_size=' + str(apg.max_size)
+
+    return output_buffer
 
 @with_client
 def p4ctl_dump_entries(client, bridge, tbl_name=None):
@@ -935,16 +1097,229 @@ def p4ctl_dump_entries(client, bridge, tbl_name=None):
         for entry in response.entities:
             print(_format_entry(helper, entry.table_entry))
 
+@with_client
+def p4ctl_add_group(client, bridge, tbl_name, flow):
+    """
+    add-action-profile-group SWITCH TABLE GROUP_ID MEMBER_ID/ACTIONS MAX_SIZE
+    Example:
+        ovs-p4ctl add-action-profile-group br0 pipe.filter_tbl
+                    group_id=1,reference_members=(1,2),max_size=2
+    """
+    group_id, members, max_size = parse_profile_group(flow)
+
+    p4info = client.get_p4info()
+    if not p4info:
+        raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+
+    apg = helper.buildActionProfileGroup(
+        table_name=tbl_name,
+        group_id=int(group_id),
+        max_size=int(max_size),
+        members=members)
+
+    update = p4runtime_pb2.Update()
+    update.type = p4runtime_pb2.Update.INSERT
+    update.entity.action_profile_group.CopyFrom(apg)
+
+    client.write_update(update)
+
+@with_client
+def p4ctl_mod_group(client, bridge, tbl_name, flow):
+    """
+    modify-action-profile-group SWITCH TABLE GROUP_ID
+                                MEMBER_ID/ACTIONS MAX_SIZE
+    Example:
+        ovs-p4ctl modify-action-profile-group br0 pipe.filter_tbl
+                   group_id=1,reference_members=(1,2),max_size=2
+    """
+
+    group_id, members, max_size = parse_profile_group(flow)
+
+    print("Currently modify group functionality is un-supported by backend "
+          "target.!!!")
+    print("Instead delete the group:", group_id, "and re-add same group with "
+          "members:", members, " size:", max_size)
+    return
+
+    p4info = client.get_p4info()
+    if not p4info:
+        raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+
+    apg = helper.buildActionProfileGroup(
+        table_name=tbl_name,
+        group_id=int(group_id),
+        max_size=int(max_size),
+        members=members)
+
+    update = p4runtime_pb2.Update()
+    update.type = p4runtime_pb2.Update.MODIFY
+    update.entity.action_profile_group.CopyFrom(apg)
+
+    client.write_update(update)
+
+@with_client
+def p4ctl_del_group(client, bridge, tbl_name, flow):
+    """
+    delete-action-profile-group SWITCH TABLE GROUP_ID
+    Example:
+        ovs-p4ctl delete-action-profile-group br0 pipe.filter_tbl
+                  group_id=1
+    """
+    group_id = flow.split("group_id=")[1]
+
+    p4info = client.get_p4info()
+    if not p4info:
+        raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+    apg = helper.buildActionProfileGroup(
+          table_name=tbl_name,
+          group_id=int(group_id))
+
+    update = p4runtime_pb2.Update()
+    update.type = p4runtime_pb2.Update.DELETE
+    update.entity.action_profile_group.CopyFrom(apg)
+
+    client.write_update(update)
+
+@with_client
+def p4ctl_add_member(client, bridge, tbl_name, flow):
+    """
+    add-action-profile-member SWITCH TABLE ACTION ACTION_DATA MEMBER_ID
+    Example:
+        ovs-p4ctl add-action-profile-member br0 pipe.filter_tbl
+                    action=pipe.push_mpls(10),member_id=1
+    """
+    action, action_data, mem_id = parse_profile_mem(flow)
+
+    p4info = client.get_p4info()
+    if not p4info:
+        raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+
+    apm = helper.buildActionProfileMember(
+        table_name=tbl_name,
+        member_id=int(mem_id),
+        action_name=action,
+        action_params={a.name: int(action_data[idx]) for idx,
+                       a in enumerate(helper.get_action_params(action))})
+
+    update = p4runtime_pb2.Update()
+    update.type = p4runtime_pb2.Update.INSERT
+    update.entity.action_profile_member.CopyFrom(apm)
+
+    client.write_update(update)
+
+
+@with_client
+def p4ctl_del_member(client, bridge, tbl_name, flow):
+    """
+    delete-action-profile-member SWITCH TABLE MEMBER_ID
+    Example:
+        ovs-p4ctl delete-action-profile-member br0 pipe.filter_tbl
+                  member_id=1
+    """
+    member_id = flow.split("member_id=")[1]
+
+    p4info = client.get_p4info()
+    if not p4info:
+        raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+    apm = helper.buildActionProfileMember(
+          table_name=tbl_name,
+           member_id=int(member_id))
+
+    update = p4runtime_pb2.Update()
+    update.type = p4runtime_pb2.Update.DELETE
+    update.entity.action_profile_member.CopyFrom(apm)
+
+    client.write_update(update)
+
+
+
+@with_client
+def p4ctl_get_member(client, bridge, tbl_name, flow):
+    """
+    get-action-profile-member SWITCH TABLE MEMBER_ID
+    Example:
+        ovs-p4ctl get-action-profile-member br0 pipe.filter_tbl
+                    "member_id=1"
+    """
+
+    member_id = flow.split("member_id=")[1]
+
+    p4info = client.get_p4info()
+    if not p4info:
+       raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+    entity = p4runtime_pb2.Entity()
+    apm = entity.action_profile_member
+
+    apm.member_id = int(member_id)
+    if not tbl_name:
+        apm.action_profile_id = 0
+    else:
+        apm.action_profile_id = helper.get_action_profiles_id(tbl_name)
+
+    print("Action associated with member_id: ", member_id)
+    for response in client.read_one(entity):
+        for entry in response.entities:
+            print(_format_member(helper, entry.action_profile_member))
+
+@with_client
+def p4ctl_get_group(client, bridge, tbl_name, flow):
+    """
+    get-action-profile-group SWITCH TABLE GROUP_ID
+    Example:
+        ovs-p4ctl get-action-profile-group br0 pipe.filter_tbl
+                    "group_id=1"
+    """
+    group_id = flow.split("group_id=")[1]
+
+    p4info = client.get_p4info()
+    if not p4info:
+       raise Exception("cannot retrieve P4Info from device {}".format(bridge))
+
+    helper = P4InfoHelper(p4info)
+    entity = p4runtime_pb2.Entity()
+    apg = entity.action_profile_group
+
+    apg.group_id = int(group_id)
+    if not tbl_name:
+        apg.action_profile_id  = 0
+    else:
+        apg.action_profile_id  = helper.get_action_profiles_id(tbl_name)
+
+    print("Members associated with group: ", group_id)
+    for response in client.read_one(entity):
+        for entry in response.entities:
+            print(_format_group(helper, entry.action_profile_group))
+
 
 all_commands = {
     "show": (p4ctl_show, 1),
     "set-pipe": (p4ctl_set_pipe, 3),
     "get-pipe": (p4ctl_get_pipe, 1),
     "add-entry": (p4ctl_add_entry, 3),
+    "modify-entry": (p4ctl_mod_entry, 3),
     "set-default-entry": (p4ctl_set_default_entry, 3),
     "get-default-entry": (p4ctl_get_default_entry, 2),
     "del-entry": (p4ctl_del_entry, 2),
     "dump-entries": (p4ctl_dump_entries, 1),
+    "add-action-profile-member": (p4ctl_add_member, 3),
+    "delete-action-profile-member": (p4ctl_del_member, 3),
+    "add-action-profile-group": (p4ctl_add_group, 3),
+    "modify-action-profile-group": (p4ctl_mod_group, 3),
+    "delete-action-profile-group": (p4ctl_del_group, 3),
+    "get-action-profile-member": (p4ctl_get_member, 3),
+    "get-action-profile-group": (p4ctl_get_group, 3),
 }
 
 
