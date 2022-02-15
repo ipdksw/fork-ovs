@@ -694,9 +694,22 @@ index f553054d..3f41e9e1 100644
  }
 
 diff --git a/stratum/hal/lib/common/common.proto b/stratum/hal/lib/common/common.proto
-index f7a72d70..45736661 100644
+index f7a72d70..7d5f2fd6 100644
 --- a/stratum/hal/lib/common/common.proto
 +++ b/stratum/hal/lib/common/common.proto
+@@ -46,6 +46,12 @@ enum Platform {
+   // TODO(unknown): Add all the BCM and MLNX based platforms.
+ }
+
++enum SWBackendQemuHotplugStatus {
++  NO_HOTPLUG = 0;
++  HOTPLUG_ADD = 1;
++  HOTPLUG_DEL = 2;
++}
++
+ // List of traffic classes (aka class of services).
+ // Note: The names of the enum cases are important and are used to identify
+ // QoS queues in gNMI YANG model.
 @@ -243,6 +243,23 @@ enum FecMode {
    FEC_MODE_AUTO = 3;
  }
@@ -721,7 +734,7 @@ index f7a72d70..45736661 100644
  // Config-related parameters for the ports (singleton and trunk ports).
  message PortConfigParams {
    // Per port hash config. Most of the hash configuration is given per node.
-@@ -276,6 +293,18 @@ message PortConfigParams {
+@@ -276,6 +293,30 @@ message PortConfigParams {
    MacAddress mac_address = 7;
    // The configured loopback state for this port.
    LoopbackState loopback_mode = 8;
@@ -737,10 +750,22 @@ index f7a72d70..45736661 100644
 +  string socket = 13;
 +  // Backend device type
 +  SWBackendDeviceType device_type = 14;
++  // Socket ip for qemu monitor socket
++  string qemu_socket_ip = 15;
++  // Socket port for qemu monitor socket
++  int32 qemu_socket_port = 16;
++  // Qemu Hotplug status
++  SWBackendQemuHotplugStatus qemu_hotplug_status = 17;
++  // The configured mac address for this port.
++  uint64 qemu_vm_mac_address = 18;
++  //VM netdev id for hotplug
++  string qemu_vm_netdev_id = 19;
++  //VM chardev id for hotplug
++  string qemu_vm_chardev_id = 20;
  }
 
  // Chassis uniquely identifies a switch with a single management interface,
-@@ -1115,6 +1144,31 @@ message LoopbackStatus {
+@@ -1115,6 +1156,55 @@ message LoopbackStatus {
    LoopbackState state = 1;  // required
  }
 
@@ -769,10 +794,34 @@ index f7a72d70..45736661 100644
 +  string sock_path = 1; // required
 +}
 +
++// Specifies qemu monitor socket ip for hotplug
++message QemuSocketIpConfigured {
++  string qemu_socket_ip = 1; // required
++}
++
++message QemuSocketPortConfigured {
++  int32 qemu_socket_port = 1; // required
++}
++
++// Specifies backend port type to be used
++message QemuHotplugConfigured {
++  SWBackendQemuHotplugStatus qemu_hotplug_status = 1; // required
++}
++
++// Specifies VM netdev id for hotplug
++message QemuVMNetdevIdConfigured {
++  string qemu_vm_netdev_id = 1; // required
++}
++
++// Specifies VM chardev id for hotplug
++message QemuVMChardevIdConfigured {
++  string qemu_vm_chardev_id = 1; // required
++}
++
  // Wrapper around admin state of a HW component.
  message AdminStatus {
    AdminState state = 1;  // required
-@@ -1302,6 +1356,11 @@ message DataResponse {
+@@ -1302,6 +1392,17 @@ message DataResponse {
      LoopbackStatus loopback_status = 20;
      NodeInfo node_info = 21;
      SdnPortId sdn_port_id = 22;
@@ -781,10 +830,16 @@ index f7a72d70..45736661 100644
 +    QueuesConfigured queue_count = 25;
 +    SocketPathConfigured sock_path = 26;
 +    SWBackendDeviceStatus device_type = 27;
++    QemuSocketIpConfigured qemu_socket_ip = 28;
++    QemuSocketPortConfigured qemu_socket_port = 29;
++    QemuHotplugConfigured qemu_hotplug_status = 30;
++    MacAddress qemu_vm_mac_address = 31;
++    QemuVMNetdevIdConfigured qemu_vm_netdev_id = 32;
++    QemuVMChardevIdConfigured qemu_vm_chardev_id = 33;
    }
  }
 
-@@ -1331,6 +1390,16 @@ message SetRequest {
+@@ -1331,6 +1432,28 @@ message SetRequest {
          ForwardingViability forwarding_viability = 10;
          // The intended loopback state of the port.
          LoopbackStatus loopback_status = 11;
@@ -798,6 +853,18 @@ index f7a72d70..45736661 100644
 +        QueuesConfigured queue_count = 15;
 +        // The socket path to be used by backend.
 +        SocketPathConfigured sock_path = 16;
++       // Qemu monitor socket ip used for hotplug.
++        QemuSocketIpConfigured qemu_socket_ip = 17;
++        // Qemu monitor socket port used for hotplug.
++        QemuSocketPortConfigured qemu_socket_port = 18;
++        // Qemu monitor hotplug status
++        QemuHotplugConfigured qemu_hotplug_status = 19;
++        // VM mac address for qemu based VM's for hotplug
++        MacAddress qemu_vm_mac_address = 20;
++        // VM netdev id for hotplug
++        QemuVMNetdevIdConfigured qemu_vm_netdev_id = 21;
++        // VM chardev id for hotplug
++        QemuVMChardevIdConfigured qemu_vm_chardev_id = 22;
        }
      }
      // Data required to set info for a specific node.

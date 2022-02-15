@@ -25,10 +25,26 @@
 #define GNMI_CONFIG_QUEUE_COUNT 0x04
 #define GNMI_CONFIG_SOCKET_PATH 0x08
 #define GNMI_CONFIG_HOST_NAME 0x10
+#define GNMI_CONFIG_HOTPLUG_SOCKET_IP 0x20
+#define GNMI_CONFIG_HOTPLUG_SOCKET_PORT 0x40
+#define GNMI_CONFIG_HOTPLUG_STATUS 0x80
+#define GNMI_CONFIG_HOTPLUG_VM_MAC 0x100
+#define GNMI_CONFIG_HOTPLUG_VM_NETDEV_ID 0x200
+#define GNMI_CONFIG_HOTPLUG_VM_CHARDEV_ID 0x400
 
 #define GNMI_CONFIG_TDI (GNMI_CONFIG_PORT_TYPE | GNMI_CONFIG_DEVICE_TYPE | \
                          GNMI_CONFIG_QUEUE_COUNT | GNMI_CONFIG_SOCKET_PATH | \
                          GNMI_CONFIG_HOST_NAME)
+
+#define GNMI_CONFIG_HOTPLUG (GNMI_CONFIG_HOTPLUG_SOCKET_IP | GNMI_CONFIG_HOTPLUG_SOCKET_PORT | \
+                             GNMI_CONFIG_HOTPLUG_STATUS | GNMI_CONFIG_HOTPLUG_VM_MAC | \
+                             GNMI_CONFIG_HOTPLUG_VM_NETDEV_ID | GNMI_CONFIG_HOTPLUG_VM_CHARDEV_ID)
+
+typedef enum qemu_cmd_type {
+   CHARDEV_ADD,
+   NETDEV_ADD,
+   DEVICE_ADD
+}qemu_cmd_type;
 
 namespace stratum {
 namespace hal {
@@ -131,6 +147,12 @@ class BfChassisManager {
     int32 queues;
     std::string socket_path;
     std::string host_name;
+    std::string qemu_socket_ip;
+    int32 qemu_socket_port;
+    SWBackendQemuHotplugStatus qemu_hotplug_status;
+    uint64 qemu_vm_mac_address;
+    std::string qemu_vm_netdev_id;
+    std::string qemu_vm_chardev_id;
 
     PortConfig() : admin_state(ADMIN_STATE_UNKNOWN),
                    port_type(PORT_TYPE_NONE),
@@ -174,6 +196,14 @@ class BfChassisManager {
                                   const SingletonPort& singleton_port,
                                   const PortConfig& config_old,
                                   PortConfig* config);
+
+  //helper to send qemu hotplug commands to qemu monitor socket
+  void SendQemuCmdsHelper(int sockfd, std::string cmd);
+
+  // helper to prepare qemu hotplug commands to qemu monitor socket
+  std::string PrepQemuCmdsHelper(qemu_cmd_type cmd, std::string chardev_id,
+                                 std::string netdev_id, std::string mac,
+                                 std::string socket_path);
 
   // Determines the mode of operation:
   // - OPERATION_MODE_STANDALONE: when Stratum stack runs independently and

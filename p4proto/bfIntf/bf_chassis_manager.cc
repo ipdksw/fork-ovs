@@ -14,6 +14,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "absl/types/optional.h"
+#include "absl/strings/str_format.h"
 #include "stratum/glue/integral_types.h"
 #include "stratum/hal/lib/common/constants.h"
 #include "stratum/hal/lib/common/gnmi_events.h"
@@ -24,6 +25,11 @@
 #include "stratum/lib/macros.h"
 #include "stratum/lib/utils.h"
 #include "stratum/glue/logging.h"
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 //#include "stratum/glue/init_google.h"
 //#include "glog/logging.h"
 
@@ -111,11 +117,81 @@ BfChassisManager::ValidateOnetimeConfig(uint64 node_id, uint32 port_id,
       }
       break;
 
+    case SetRequest::Request::Port::ValueCase::kQemuSocketIp:
+      if (validate & GNMI_CONFIG_HOTPLUG_SOCKET_IP) {
+          return true;
+      }
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuSocketPort:
+      if (validate & GNMI_CONFIG_HOTPLUG_SOCKET_PORT) {
+          return true;
+      }
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuHotplugStatus:
+      if (validate & GNMI_CONFIG_HOTPLUG_STATUS) {
+          return true;
+      }
+
+    case SetRequest::Request::Port::ValueCase::kQemuVmMacAddress:
+      if (validate & GNMI_CONFIG_HOTPLUG_VM_MAC) {
+          return true;
+      }
+      break;
+    case SetRequest::Request::Port::ValueCase::kQemuVmNetdevId:
+      if (validate & GNMI_CONFIG_HOTPLUG_VM_NETDEV_ID) {
+          return true;
+      }
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuVmChardevId:
+      if (validate & GNMI_CONFIG_HOTPLUG_VM_CHARDEV_ID) {
+          return true;
+      }
+      break;
+
     default:
       break;
   }
 
   return false;
+}
+
+void BfChassisManager::SendQemuCmdsHelper(int sockfd,
+                                          std::string cmd) {
+    int sock_ret = write(sockfd, cmd.c_str(), strlen(cmd.c_str()));
+    LOG(INFO) << "Write Ret value=" << sock_ret;
+    sleep(1);
+    return;
+}
+
+std::string BfChassisManager::PrepQemuCmdsHelper(qemu_cmd_type cmd_type, std::string chardev_id,
+                                                 std::string netdev_id, std::string mac,
+                                                 std::string socket_path) {
+   std::stringstream buffer;
+   buffer.clear();
+   buffer.str("");
+
+   switch(cmd_type) {
+      case CHARDEV_ADD:
+         buffer << "chardev-add socket,id=" << chardev_id << ",path=" << socket_path << "\n";
+         break;
+
+      case NETDEV_ADD:
+         buffer << "netdev_add type=vhost-user,id=" << netdev_id << ",chardev=" << chardev_id << ",vhostforce\n";
+         break;
+
+      case DEVICE_ADD:
+         buffer << "device_add virtio-net-pci,mac=" << mac << ",netdev=" << netdev_id << "\n";
+         break;
+
+      default:
+         break;
+   }
+
+   LOG(INFO) <<" OVS patch Buffer cmd is " << buffer.str();
+   return buffer.str();
 }
 
 ::util::Status BfChassisManager::ValidateAndAdd(uint64 node_id, uint32 port_id,
@@ -158,6 +234,42 @@ BfChassisManager::ValidateOnetimeConfig(uint64 node_id, uint32 port_id,
       LOG(INFO) << "ValidateAndAdd::kHostConfig = " << config_params.host_name();
       break;
 
+    case SetRequest::Request::Port::ValueCase::kQemuSocketIp:
+      validate |= GNMI_CONFIG_HOTPLUG_SOCKET_IP;
+      config.qemu_socket_ip = config_params.qemu_socket_ip();
+      LOG(INFO) << "ValidateAndAdd::kQemuSocketIp = " << config_params.qemu_socket_ip();
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuSocketPort:
+      validate |= GNMI_CONFIG_HOTPLUG_SOCKET_PORT;
+      config.qemu_socket_port = config_params.qemu_socket_port();
+      LOG(INFO) << "ValidateAndAdd::kQemuSocketPort = " << config_params.qemu_socket_port();
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuHotplugStatus:
+      validate |= GNMI_CONFIG_HOTPLUG_STATUS;
+      config.qemu_hotplug_status = config_params.qemu_hotplug_status();
+      LOG(INFO) << "ValidateAndAdd::kQemuHotplugStatus = " << config_params.qemu_hotplug_status();
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuVmMacAddress:
+      validate |= GNMI_CONFIG_HOTPLUG_VM_MAC;
+      config.qemu_vm_mac_address = config_params.qemu_vm_mac_address();
+      LOG(INFO) << "ValidateAndAdd::kQemuVmMacAddress = " << config.qemu_vm_mac_address;
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuVmNetdevId:
+      validate |= GNMI_CONFIG_HOTPLUG_VM_NETDEV_ID;
+      config.qemu_vm_netdev_id = config_params.qemu_vm_netdev_id();
+      LOG(INFO) << "ValidateAndAdd::kQemuVmNetdevId = " << config.qemu_vm_netdev_id;
+      break;
+
+    case SetRequest::Request::Port::ValueCase::kQemuVmChardevId:
+      validate |= GNMI_CONFIG_HOTPLUG_VM_CHARDEV_ID;
+      config.qemu_vm_chardev_id = config_params.qemu_vm_chardev_id();
+      LOG(INFO) << "ValidateAndAdd::kQemuVmChardevId = " << config.qemu_vm_chardev_id;
+      break;
+
     default:
       break;
   }
@@ -169,6 +281,55 @@ BfChassisManager::ValidateOnetimeConfig(uint64 node_id, uint32 port_id,
       LOG(INFO) << "SDK_PORT ID while validating = " << sdk_port_id;
       RETURN_IF_ERROR(AddPortHelper(node_id, unit, sdk_port_id, singleton_port, &config));
   }
+
+  if((validate & GNMI_CONFIG_HOTPLUG) == GNMI_CONFIG_HOTPLUG) {
+      // Create socket port and connect it to qemu server socket
+      int sockfd = 0, sock_ret = 0;
+      struct sockaddr_in serv_addr;
+      std::string socket_path = config.socket_path.c_str();
+      std::string netdev_id = config.qemu_vm_netdev_id.c_str();
+      std::string chardev_id = config.qemu_vm_chardev_id.c_str();
+      std::string cmd;
+      uint64 mac_address = config.qemu_vm_mac_address;
+      std::string string_mac = (absl::StrFormat("%02x:%02x:%02x:%02x:%02x:%02x", (mac_address >> 40) & 0xFF,
+                                                   (mac_address >> 32) & 0xFF, (mac_address >> 24) & 0xFF,
+                                                   (mac_address >> 16) & 0xFF, (mac_address >> 8) & 0xFF,
+                                                    mac_address & 0xFF));
+
+      if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+       {
+           LOG(INFO) << "Error : Failed to create socket for hotplug";
+           goto exit;
+       }
+
+       memset(&serv_addr, '0', sizeof(serv_addr));
+
+       serv_addr.sin_addr.s_addr = inet_addr(config.qemu_socket_ip.c_str());
+       serv_addr.sin_family = AF_INET;
+       serv_addr.sin_port = htons(config.qemu_socket_port);
+
+       if( connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+       {
+          LOG(INFO) << " Error : Failed to connect to Qemu monitor socket";
+          goto exit;
+       }
+
+       if(config.qemu_hotplug_status == HOTPLUG_ADD) {
+         cmd = PrepQemuCmdsHelper(CHARDEV_ADD, chardev_id, netdev_id, string_mac, socket_path);
+         SendQemuCmdsHelper(sockfd, cmd);
+
+         cmd = PrepQemuCmdsHelper(NETDEV_ADD, chardev_id, netdev_id, string_mac, socket_path);
+         SendQemuCmdsHelper(sockfd, cmd);
+
+         cmd = PrepQemuCmdsHelper(DEVICE_ADD, chardev_id, netdev_id, string_mac, socket_path);
+         SendQemuCmdsHelper(sockfd, cmd);
+       }
+
+        close(sockfd);
+        LOG(INFO) << "Closed qemu socket";
+    }
+
+exit:
   google::FlushLogFiles(google::INFO);
   return ::util::OkStatus();
 }
