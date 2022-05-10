@@ -58,3 +58,4 @@ after_build:
   - ps: 7z a C:\ovs-master-$env:CONFIGURATION.zip C:\openvswitch
   - ps: Push-AppveyorArtifact C:\ovs-master-$env:CONFIGURATION.zip
   - ps: Push-AppveyorArtifact C:\OpenvSwitch-$env:CONFIGURATION.msi
+
