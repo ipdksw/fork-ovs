@@ -107,7 +107,6 @@ As mentioned, Open vSwitch is licensed under the open source Apache 2 license.
 Some files may be marked specifically with a different license, in which case
 that license applies to the file in question.
 
-
 Files under the datapath directory are licensed under the GNU General Public
 License, version 2.
 
