@@ -237,7 +237,6 @@ v2.14.0 - 17 Aug 2020
      * Add two new fields: tun_gtpu_flags, tun_gtpu_msgtype.
      * Only support for userspace datapath.
 
-
 v2.13.0 - 14 Feb 2020
 ---------------------
    - OVN:
